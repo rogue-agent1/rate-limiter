@@ -1,10 +1,11 @@
-# Rate Limiter
+# rate-limiter
 
-A zero-dependency Python CLI tool.
+Token bucket and sliding window rate limiters.
 
 ## Usage
 
 ```bash
-python rate_limiter.py test
-python rate_limiter.py demo
+python3 rate_limiter.py test
 ```
+
+Zero dependencies. Python 3.8+.
