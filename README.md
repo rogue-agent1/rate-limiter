@@ -1,11 +1,9 @@
 # rate-limiter
 
-Token bucket and sliding window rate limiters.
+Rate limiter (token bucket + sliding window). Zero dependencies, single file, Python 3.8+.
 
 ## Usage
 
 ```bash
-python3 rate_limiter.py test
+python3 rate_limiter.py --help
 ```
-
-Zero dependencies. Python 3.8+.

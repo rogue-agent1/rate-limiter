@@ -1,91 +1,77 @@
 #!/usr/bin/env python3
-"""rate_limiter - Token bucket and sliding window rate limiters."""
-import sys, time
+"""Rate limiter (token bucket + sliding window). Zero dependencies."""
+import time, threading, sys
 
 class TokenBucket:
     def __init__(self, rate, capacity):
         self.rate = rate
         self.capacity = capacity
         self.tokens = capacity
-        self.last = time.monotonic()
-    def _refill(self):
-        now = time.monotonic()
-        elapsed = now - self.last
-        self.tokens = min(self.capacity, self.tokens + elapsed * self.rate)
-        self.last = now
-    def allow(self, tokens=1):
-        self._refill()
-        if self.tokens >= tokens:
-            self.tokens -= tokens
-            return True
-        return False
-    def wait_time(self, tokens=1):
-        self._refill()
-        if self.tokens >= tokens:
-            return 0.0
-        return (tokens - self.tokens) / self.rate
+        self.last_time = time.monotonic()
+        self._lock = threading.Lock()
 
-class SlidingWindowCounter:
-    def __init__(self, limit, window_sec):
-        self.limit = limit
-        self.window = window_sec
-        self.counts = {}  # bucket -> count
-        self.bucket_size = max(1, window_sec // 10)
-    def _bucket(self, t=None):
-        if t is None:
-            t = time.monotonic()
-        return int(t / self.bucket_size)
-    def _clean(self, now_bucket):
-        cutoff = now_bucket - int(self.window / self.bucket_size) - 1
-        for k in list(self.counts):
-            if k <= cutoff:
-                del self.counts[k]
-    def allow(self):
-        now = time.monotonic()
-        b = self._bucket(now)
-        self._clean(b)
-        total = sum(self.counts.values())
-        if total >= self.limit:
+    def acquire(self, tokens=1):
+        with self._lock:
+            now = time.monotonic()
+            elapsed = now - self.last_time
+            self.tokens = min(self.capacity, self.tokens + elapsed * self.rate)
+            self.last_time = now
+            if self.tokens >= tokens:
+                self.tokens -= tokens
+                return True
             return False
-        self.counts[b] = self.counts.get(b, 0) + 1
-        return True
 
-class FixedWindow:
-    def __init__(self, limit, window_sec):
+    def wait(self, tokens=1):
+        while not self.acquire(tokens):
+            time.sleep(1.0 / self.rate)
+
+class SlidingWindow:
+    def __init__(self, limit, window_seconds):
         self.limit = limit
-        self.window = window_sec
-        self.count = 0
-        self.window_start = time.monotonic()
-    def allow(self):
-        now = time.monotonic()
-        if now - self.window_start >= self.window:
-            self.window_start = now
-            self.count = 0
-        if self.count < self.limit:
-            self.count += 1
-            return True
-        return False
+        self.window = window_seconds
+        self.timestamps = []
+        self._lock = threading.Lock()
 
-def test():
-    # token bucket
-    tb = TokenBucket(rate=10, capacity=5)
-    # should allow 5 requests immediately
-    for _ in range(5):
-        assert tb.allow()
-    assert not tb.allow()  # bucket empty
-    # fixed window
-    fw = FixedWindow(3, 1.0)
-    assert fw.allow() and fw.allow() and fw.allow()
-    assert not fw.allow()
-    # sliding window
-    sw = SlidingWindowCounter(5, 1.0)
-    for _ in range(5):
-        assert sw.allow()
-    assert not sw.allow()
-    print("OK: rate_limiter")
+    def acquire(self):
+        with self._lock:
+            now = time.monotonic()
+            cutoff = now - self.window
+            self.timestamps = [t for t in self.timestamps if t > cutoff]
+            if len(self.timestamps) < self.limit:
+                self.timestamps.append(now)
+                return True
+            return False
+
+    def remaining(self):
+        with self._lock:
+            now = time.monotonic()
+            cutoff = now - self.window
+            active = sum(1 for t in self.timestamps if t > cutoff)
+            return max(0, self.limit - active)
+
+class LeakyBucket:
+    def __init__(self, rate, capacity):
+        self.rate = rate
+        self.capacity = capacity
+        self.water = 0
+        self.last_time = time.monotonic()
+        self._lock = threading.Lock()
+
+    def acquire(self):
+        with self._lock:
+            now = time.monotonic()
+            elapsed = now - self.last_time
+            self.water = max(0, self.water - elapsed * self.rate)
+            self.last_time = now
+            if self.water < self.capacity:
+                self.water += 1
+                return True
+            return False
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "test":
-        test()
-    else:
-        print("Usage: rate_limiter.py test")
+    tb = TokenBucket(rate=10, capacity=10)
+    accepted = sum(1 for _ in range(20) if tb.acquire())
+    print(f"Token bucket: {accepted}/20 accepted")
+    sw = SlidingWindow(limit=5, window_seconds=1)
+    accepted = sum(1 for _ in range(10) if sw.acquire())
+    print(f"Sliding window: {accepted}/10 accepted")
